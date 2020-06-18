@@ -1,0 +1,155 @@
+---
+title: "Linear Regression to predict used cars prices"
+author: "Jansen Lopez"
+date: "6/18/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+### Dataset: used cars
+### This dataset consists of factors the prices of several used cars
+### Explore, Process, and prepare a used cars dataset
+### Use a multivariate linear regression to predict used cars price
+
+### Load Some Libraries that will be heavily used
+
+```{r pressure, echo=FALSE}
+library(tidymodels)
+library(tidyverse)
+library(skimr)
+library(readr)
+library(rsample)
+```
+
+```{r pressure, echo=FALSE}
+library(tidymodels)
+library(tidyverse)
+library(skimr)
+library(readr)
+library(rsample)
+```
+
+### Load and do premliminary checks on the dataset
+
+```{r}
+used_cars_raw <- read_csv("usedcars.csv")
+View(used_cars_raw)
+used_cars_raw %>% skim
+### Check if the dataset has missing values
+### fortunately it has none
+is.na(used_cars_raw) %>% sum
+```
+
+### Get a feel of the dataset via Visualizations and other means
+
+```{r}
+used_cars_raw %>%
+  ggplot(aes(x = price)) + geom_boxplot()
+```
+
+```{r}
+### Mileage magnitude is higher than price
+used_cars_raw %>%
+  ggplot(aes(x = mileage)) + geom_boxplot()
+```
+
+```{r}
+# (Mean)Price Differences in car models seems evident
+used_cars_raw %>%
+  ggplot(aes(x = model, y = price)) +
+  geom_boxplot()
+```
+
+```{r}
+# (Mean)Price Difference in transmission types seems non-evident
+used_cars_raw %>%
+  ggplot(aes(x = transmission, y = price)) +
+  geom_boxplot()
+```
+
+```{r}
+# Use t-test to validate that the (Mean)price differences in transmission types
+# are by chance
+
+# h0 (Null Hypothesis): The mean difference are due to chance
+# h1 (Alternate Hypothesis): The mean difference is not due by chance  
+
+auto_t <- used_cars_raw %>% filter(transmission == "AUTO")
+manual_t <- used_cars_raw %>% filter(transmission == "MANUAL")
+
+auto_t$price %>% skim
+manual_t$price %>% skim
+
+# p-value = 0.1312, p-value is not < 0.05 hence we fail to reject the null hypothesis
+# Based on the t-test the difference in mean price across transmission type
+# are by chance
+t.test(auto_t$price, manual_t$price)
+```
+
+### Correlation and Further Checks
+```{r}
+# There seems to be an inverse linear relationship between price and mileage
+# Check the outlier having mileage > 120000 and price > 12000
+used_cars_raw %>%
+  ggplot(aes(x = mileage, y = price)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = F, color = "red")
+
+```
+
+# Outlier Check and Outlier Management
+
+```{r}
+# Outlier Check
+used_cars_raw %>% filter((used_cars_raw$price > 12000) & (used_cars_raw$mileage > 120000))
+# Remove the lone outlier later
+used_cars_transformed <- subset(used_cars_raw, !((used_cars_raw$price > 12000) & (used_cars_raw$mileage > 120000)))
+# Check the dataset dimension
+used_cars_transformed %>% dim
+```
+
+# Feature Engineering
+
+```{r}
+# Add a feature named car_age that describe the age of a car in days
+used_cars_transformed <- used_cars %>%
+  mutate(car_age = case_when((365 * (2012 - year) != 0) ~ 365 * (2012 - year),
+                             (365 * (2012 - year) == 0) ~ 1))
+```
+
+```{r}
+library(ggcorrplot)
+# Check the feature correlations
+# Specifically check the correlation of car_age and mileage since they will be used
+# as predictors in out linear regression model(Linear Regression tend to work poorly if # # # predictors are highly correlated). They seem to have an acceptable amount (correlation ~= 0.7ish) of
+# correlation which is acceptable 
+
+feature_correlations <- cor(used_cars_transformed %>% select(price, mileage, car_age))
+ggcorrplot(feature_correlations)
+```
+
+
+
