@@ -2,7 +2,8 @@
 title: "Linear Regression to predict used cars prices"
 author: "Jansen Lopez"
 date: "6/18/2020"
-output: html_document
+# output: html_document
+output: rmarkdown::github_document
 ---
 
 ```{r setup, include=FALSE}
