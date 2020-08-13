@@ -1,0 +1,434 @@
+---
+title: "Country Segmentation by Corruption and Development Indices"
+author: "Jansen Lopez"
+date: "8/14/2020"
+# output: html_document
+output: rmarkdown::github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+### Summary:
+
+#### The Global Corruption Perception Index ranks the countries from the least corrupt to the most corrupt. But I wanted a more succint categorization of a country's perceived corruption-not just it's rank. In addition I added features that will mix the country's development to see whether less corruption correlates with progress. (The data were from 2018 and 2019)
+
+### Methodology:
+#### Use the k-means algorithm on different numerical features that pertains to corruption, happiness, and human development in order to derive cluster of countries with similar features. And arbitrarily describe these clusters based on their instrinsic characteristics.
+
+
+```{r}
+
+library(skimr)
+library(tidymodels)
+library(tidyverse)
+
+library(ggmap)
+library(maptools)
+library(maps)  
+library(ggrepel)
+
+cpi_raw <- read.csv("CPI_2019_final_dataset.csv")
+View(cpi_raw)
+skim(cpi_raw)
+```
+
+
+#### Remove some corruption scores due to lack of data and some features that aren't as important
+```{r}
+cpi_filtered <- cpi_raw %>%
+  select(-standard.error, -Number.of.sources, -Lower.CI, -Upper.CI, -African.Development.Bank.CPIA,
+         -Bertelsmann.Foundation.Sustainable.Governance.Index, -PERC.Asia.Risk.Guide,
+         -Freedom.House.Nations.in.Transit.Ratings)
+
+```
+
+
+
+#### Rename the columns
+```{r}
+names(cpi_filtered)
+names(cpi_filtered) <- c("Country",
+                         "ISO3",
+                         "Region",
+                         "CPI_score_2019",
+                         "Rank",
+                         "Bertelsmann_Foundation_Transformation_Index",
+                         "Economist_Intelligence_Unit_Country_Ratings",
+                         "Global_Insight_Country_Risk_Ratings",
+                         "IMD_World_Competitiveness_Yearbook",
+                         "PRS_International_Country_Risk_Guide",
+                         "Varieties_of_Democracy_Project",
+                         "World_Bank_CPIA",
+                         "World_Economic_Forum_EOS",
+                         "World_Justice_Project_Rule_of_Law_Index")
+
+```
+
+
+#### Remove an erroneous country name "p"
+```{r}
+dim(cpi_filtered)
+
+cpi_filtered <- cpi_filtered %>%
+  filter(Country != "p")
+
+dim(cpi_filtered)
+
+```
+
+
+#### Add the 2019 happiness scores of countries to add features that will work alongside / against corruption
+```{r}
+happy_2019 <- read.csv("happiness_2019.csv")
+
+happy_2019_filtered <- happy_2019 %>%
+  select(Country.or.region, Score)
+
+names(happy_2019_filtered) <- c("Country", "Happiness_Score")
+
+happy_2019_filtered %>% arrange(Country) %>% .$Country
+```
+
+
+#### Rename some countries so that they could work as matching keys
+```{r}
+happy_2019_filtered[happy_2019_filtered$Country == "Congo (Brazzaville)", "Country"] <- "Congo"
+happy_2019_filtered[happy_2019_filtered$Country == "Congo (Kinshasa)", "Country"] <- "Democratic Republic of the Congo"
+happy_2019_filtered[happy_2019_filtered$Country == "Ivory Coast", "Country"] <- "Cote d'Ivoire"
+happy_2019_filtered[happy_2019_filtered$Country == "United States", "Country"] <- "United States of America"
+
+cpi_filtered[cpi_filtered$Country == "Dominica", "Country"] <- "Dominican Republic"
+cpi_filtered[cpi_filtered$Country == "Korea, South", "Country"] <- "South Korea"
+```
+
+
+
+#### Join the Happiness dataframe into the CPI dataframe  
+```{r}
+left_join(cpi_filtered, happy_2019_filtered) %>% filter(is.na(Happiness_Score)) %>%
+  arrange(Country) %>% .$Country
+
+cpi_happy_filtered <- left_join(cpi_filtered, happy_2019_filtered)
+View(cpi_happy_filtered)
+```
+
+
+#### Load and clean the IHDI dataset (Inequality Adjusted Human Development Index)
+```{r}
+ihdi_2018_raw <- read.csv("IHDI_2018.csv")
+View(ihdi_2018_raw)
+
+names(ihdi_2018_raw) <- c("Rank", "Country", "IHDI")
+ihdi_2018_filtered <- ihdi_2018_raw %>%
+  mutate(Country = str_remove_all(Country, "Â"),
+         Country = str_extract(Country, "\\w{1}.*$")) %>%
+  select("Country", "IHDI")
+         
+ihdi_2018_filtered$Country[1]
+ihdi_2018_filtered$Country
+
+```
+
+
+####Again rename some countries so that they could work as matching keys
+```{r}
+ihdi_2018_filtered[ihdi_2018_filtered$Country == "Guinea-Bissau", "Country"] <- "Guinea Bissau"
+ihdi_2018_filtered[ihdi_2018_filtered$Country == "United States", "Country"] <- "United States of America"
+
+cpi_happy_ihdi_filtered <- left_join(cpi_happy_filtered, ihdi_2018_filtered, by = "Country")
+
+View(cpi_happy_ihdi_filtered)
+```
+
+
+
+### Create reversed rankings since high scores from independent organizations means lower(ordinal) corruption ranking so we reverse the rankings so that the magnitudes of corruption scores and ranking won't be far from each other
+```{r}
+cpi_happy_ihdi_filtered <- cpi_happy_ihdi_filtered %>%
+  mutate(Reversed_Rank = (180 - Rank) + 1)
+
+View(cpi_happy_ihdi_filtered)
+skim(cpi_happy_ihdi_filtered)
+
+```
+
+
+#### Do some pre training preparation. Impute missing values using knn, remove features with no variance, lastly normalize all predictors.
+```{r}
+cpi_recipe <- recipe(Rank ~ .,
+                  data = cpi_happy_ihdi_filtered) %>%
+  update_role(Country, new_role = "Country") %>%
+  update_role(ISO3, new_role = "Country_Code") %>%
+  update_role(Region, new_role = "Region") %>%
+  step_knnimpute(all_predictors(),
+    columns = c("Bertelsmann_Foundation_Transformation_Index",
+                 "Economist_Intelligence_Unit_Country_Ratings",
+                 "IMD_World_Competitiveness_Yearbook",
+                 "PRS_International_Country_Risk_Guide",
+                 "Varieties_of_Democracy_Project",
+                 "World_Bank_CPIA",
+                 "World_Economic_Forum_EOS",
+                 "World_Justice_Project_Rule_of_Law_Index",
+                 "Happiness_Score",
+                 "IHDI"),
+                 neighbors = 5) %>%
+  step_zv(all_numeric()) %>%
+  step_normalize(all_numeric()) %>%
+  prep()
+
+```
+
+
+
+#### Check the pre-training recipe and create the input matrix
+```{r}
+cpi_recipe
+juice(cpi_recipe) %>% View
+skim(juice(cpi_recipe))
+
+cpi_matrix <- juice(cpi_recipe) %>%
+  select(-Rank, -Country, -ISO3, -Region)
+```
+
+
+#### Clustering and check which value of k gives us...
+```{r}
+set.seed(1992)
+kmeans_results <- sapply(1:10, function(x){
+  kmeans_result <- kmeans(cpi_matrix, centers = x)
+}) 
+
+group_tot_withinss <- sapply(kmeans_results[5, ], function(x){
+  x[1]
+})
+
+data.frame(k = 1:10, tot_withinss = group_tot_withinss) %>%
+  ggplot(aes(k, tot_withinss)) +
+  geom_point(size = 4, color = "navyblue") +
+  geom_line(color = "navyblue")
+
+```
+
+
+
+#### Choose k = 4 and see the breakdown of the categories seems like cluster 1 is a niche group of countries
+```{r}
+kmeans_chosen <- kmeans_results[, 4]
+kmeans_chosen$cluster %>%
+  table %>%
+  prop.table * 100.0 
+```
+
+
+#### Mapping the clusters in the world map
+```{r}
+map_location <- read.csv("countries_capitals_long_lat.csv")
+map_location
+
+map_location[map_location$Country == "United States", "Country"] <- "United States of America"
+map_location[map_location$Country == "Brunei", "Country"] <- "Brunei Darussalam"
+map_location[map_location$Country == "Macedonia (FYROM)", "Country"] <- "North Macedonia"
+map_location[map_location$Country == "Myanmar (Burma)", "Country"] <- "Myanmar"
+map_location[map_location$Country == "Congo (Republic)", "Country"] <- "Congo"
+map_location[map_location$Country == "Congo (DRC)", "Country"] <- "Democratic Republic of the Congo"
+map_location[map_location$Country == "Guinea-Bissau", "Country"] <- "Guinea Bissau"
+map_location[map_location$Country == "North Korea", "Country"] <- "Korea, North"
+```
+
+
+
+```{r}
+world_map <- borders("world", colour = "darkgrey", fill = "white")
+cpi_final <- left_join(cpi_happy_ihdi_filtered, map_location)
+cpi_final_filtered <- cpi_final %>% 
+  select(Country, Longitude, Latitude, Country, ISO3, Rank, IHDI) %>%
+  mutate(cluster = kmeans_chosen$cluster)
+
+```
+
+
+
+```{r}
+by_cluster<- function(n){
+  cpi_final_filtered %>%
+   filter(cluster == n)
+}
+
+c1 <- by_cluster(1)
+c2 <- by_cluster(2)
+c3 <- by_cluster(3)
+c4 <- by_cluster(4)
+
+head(c1)
+head(c2)
+head(c3)
+head(c4)
+
+```
+
+
+#### Analyze patterns of countries in each cluster 
+```{r}
+# Countries in cluster 1 are ranked low in corruption with very high development scores
+c1 %>%
+  .$Rank %>% median
+c1 %>%
+  .$IHDI %>% median(na.rm = T)
+
+# Countries in cluster 2 are ranked high in corruption with moderate development scores
+c2 %>%
+  .$Rank %>% median
+c2 %>%
+  .$IHDI %>% median(na.rm = T)
+
+# Countries in cluster 3 are ranked moderately in corruption with high development scores
+c3 %>%
+  .$Rank %>% median
+c3 %>%
+  .$IHDI %>% median(na.rm = T)
+
+# Countries in cluster 4 are ranked very high in corruption with really low development scores
+c4 %>%
+  .$Rank %>% median
+c4 %>%
+  .$IHDI %>% median(na.rm = T)
+
+```
+
+
+
+### Categories of Corruption:
+#### relative honesty 
+#### fair
+#### corrupt
+
+
+### Categories of Development:
+#### developed
+#### nearly developed
+#### developing
+#### underdeveloped
+
+
+### Cluster Descriptions:
+#### *Cluster1: Relatively Honest & Developed
+#### *Cluster2: Corrupt & Developing
+#### *Cluster3: Fair & Nearly Developed
+#### *Cluster4: Corrupt & Underdeveloped
+
+
+
+```{r}
+ggplot(cpi_final_filtered) + world_map +
+  geom_point(aes(Longitude,
+                 Latitude,
+                 color = as.factor(cluster)),
+                 size = 2.5,
+                 alpha = 0.5) +
+  labs(x = "", y = "", title = "Country Segmentation by Corruption and Development Indices") +
+  scale_color_manual( values = c("navyblue", "orange", "darkgreen", "red"),
+                    name = "State Description",
+                    breaks = c(1, 2, 3, 4),
+                    labels = c("Relatively Honest & Developed",
+                             "Corrupt & Developing",
+                             "Fair & Developed",
+                             "Corrupt & Underdeveloped")) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position="bottom")
+
+```
+
+
+### Countries under Cluster 1 (Relatively Honest & Developed States)
+```{r}
+ggplot(c1) + world_map +
+  geom_point(aes(Longitude,
+                Latitude,
+                color = as.factor(cluster)),
+                size = 2.5,
+                alpha = 0.5) +
+  geom_text_repel(aes(Longitude, Latitude, label = Country),
+                  size  = 3.5,
+                  segment.color = "black") +
+  scale_color_manual( values = c("navyblue"),
+                    name = "State Description",
+                    breaks = c(1),
+                    labels = c("Relatively Honest & Developed")) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position="bottom") +
+  labs(x = "", y = "", title = "Cluster 1")
+```
+
+
+### Countries under Cluster 2 (Corrupt & Developing States)
+```{r}
+ggplot(c2) + world_map +
+  geom_point(aes(Longitude,
+                Latitude,
+                color = as.factor(cluster)),
+                size = 2.5,
+                alpha = 0.5) +
+  geom_text_repel(aes(Longitude, Latitude, label = Country),
+                  size  = 3.5,
+                  segment.color = "black") +
+  scale_color_manual( values = c("orange"),
+                    name = "State Description",
+                    breaks = c(2),
+                    labels = c("Corrupt & Developing States")) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position="bottom") +
+  labs(x = "", y = "", title = "Cluster 2")
+```
+
+
+
+### Countries under Cluster 3 (Fair & Nearly Developed States)
+```{r}
+ggplot(c3) + world_map +
+  geom_point(aes(Longitude,
+                Latitude,
+                color = as.factor(cluster)),
+                size = 2.5,
+                alpha = 0.5) +
+  geom_text_repel(aes(Longitude, Latitude, label = Country),
+                  size  = 3.5,
+                  segment.color = "black") +
+  scale_color_manual( values = c("darkgreen"),
+                    name = "State Description",
+                    breaks = c(3),
+                    labels = c("Fair & Nearly Developed States")) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position="bottom") +
+  labs(x = "", y = "", title = "Cluster 3")
+```
+
+
+### Countries under Cluster 4 (Corrupt & Undereveloped States)
+```{r}
+ggplot(c4) + world_map +
+  geom_point(aes(Longitude,
+                Latitude,
+                color = as.factor(cluster)),
+                size = 2.5,
+                alpha = 0.5) +
+  geom_text_repel(aes(Longitude, Latitude, label = Country),
+                  size  = 3.5,
+                  segment.color = "black") +
+  scale_color_manual(values = c("red"),
+                    name = "State Description",
+                    breaks = c(4),
+                    labels = c("Corrupt & Underdeveloped States")) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position="bottom") +
+  labs(x = "", y = "", title = "Cluster 4")
+```
+
+
+### References:
+##### https://www.kaggle.com/jeegarmaru/corruption-perceptions-index-for-10-years?select=CPI_2019_final_dataset.csv
+##### https://www.kaggle.com/unsdsn/world-happiness
+##### https://en.wikipedia.org/wiki/List_of_countries_by_inequality-adjusted_HDI
+ 
