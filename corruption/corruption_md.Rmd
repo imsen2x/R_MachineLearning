@@ -432,3 +432,13 @@ ggplot(c4) + world_map +
 ##### https://www.kaggle.com/unsdsn/world-happiness
 ##### https://en.wikipedia.org/wiki/List_of_countries_by_inequality-adjusted_HDI
  
+
+```{r}
+cpi_happy_ihdi_filtered %>%
+  na.omit() %>%
+  select(CPI_score_2019, Happiness_Score, IHDI) %>%
+  ggcorrplot(hc.order = TRUE, type = "upper",
+     outline.col = "white")
+ 
+```
+
